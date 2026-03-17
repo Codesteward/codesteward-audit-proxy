@@ -27,6 +27,10 @@ type AuditEvent struct {
 	Model         string
 	Raw           string // full original response body
 
+	// ResourceGroup is the SAP AI Core AI-Resource-Group header value.
+	// Empty for all non-SAP providers.
+	ResourceGroup string
+
 	// RequestCaptured is false when AUDIT_CAPTURE_REQUESTS=false.
 	// Always true on direction="response" records.
 	RequestCaptured bool

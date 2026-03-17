@@ -43,7 +43,7 @@ func (w *Writer) WriteBatch(ctx context.Context, events []AuditEvent) error {
 	}
 
 	batch, err := w.conn.PrepareBatch(ctx,
-		fmt.Sprintf("INSERT INTO %s.audit_events (session_id, turn_id, ts, agent, project, branch, direction, thinking, assistant_text, tool_name, tool_input, model, raw, request_captured, user_messages)", w.db))
+		fmt.Sprintf("INSERT INTO %s.audit_events (session_id, turn_id, ts, agent, project, branch, direction, thinking, assistant_text, tool_name, tool_input, model, raw, request_captured, user_messages, resource_group)", w.db))
 	if err != nil {
 		return fmt.Errorf("clickhouse: prepare batch: %w", err)
 	}
@@ -73,6 +73,7 @@ func (w *Writer) WriteBatch(ctx context.Context, events []AuditEvent) error {
 			e.Raw,
 			rc,
 			userMessages,
+			e.ResourceGroup,
 		); err != nil {
 			// Abort the whole batch on any row error.
 			return fmt.Errorf("clickhouse: append row: %w", err)

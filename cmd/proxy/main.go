@@ -70,7 +70,12 @@ func main() {
 	// Batcher and transport.
 	batcher := audit.NewBatcher(writer, cfg.BatchSize, cfg.BatchInterval)
 	transport := proxy.BuildTransport(cfg)
-	handler := proxy.NewHandler(batcher, transport, cfg.AuditProject, cfg.AuditBranch, scrubber, cfg.CaptureRequests)
+
+	if cfg.SAPAICoreBaseURL == "" {
+		slog.Warn("SAP AI Core routing disabled: SAP_AICORE_BASE_URL is not set")
+	}
+	router := proxy.NewRouter(cfg.SAPAICoreBaseURL, cfg.SAPAICoreAuthHost)
+	handler := proxy.NewHandler(batcher, transport, cfg.AuditProject, cfg.AuditBranch, scrubber, cfg.CaptureRequests, router)
 
 	srv := &http.Server{
 		Addr:         cfg.ProxyAddr,

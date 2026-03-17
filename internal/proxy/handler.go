@@ -28,14 +28,16 @@ type metadataKey struct{}
 
 // requestMeta holds per-request audit state threaded through the context.
 type requestMeta struct {
-	sessionID    string
-	turnID       string
-	agent        string
-	upstreamName string
-	project      string
-	branch       string
-	startTime    time.Time
-	batcher      audit.EventAdder
+	sessionID     string
+	turnID        string
+	agent         string
+	upstreamName  string
+	project       string
+	branch        string
+	startTime     time.Time
+	batcher       audit.EventAdder
+	reqPath       string
+	resourceGroup string
 }
 
 // Handler is the core reverse proxy HTTP handler.
@@ -45,6 +47,7 @@ type Handler struct {
 	branch          string
 	scrubber        audit.Scrubber
 	captureRequests bool
+	router          *Router
 	rp              *httputil.ReverseProxy
 }
 
@@ -53,13 +56,14 @@ type Handler struct {
 // project and branch are stored on every audit row for multi-tenancy.
 // scrubber is applied to request content before storage; captureRequests
 // controls whether request bodies are stored at all.
-func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, branch string, scrubber audit.Scrubber, captureRequests bool) *Handler {
+func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, branch string, scrubber audit.Scrubber, captureRequests bool, router *Router) *Handler {
 	h := &Handler{
 		batcher:         batcher,
 		project:         project,
 		branch:          branch,
 		scrubber:        scrubber,
 		captureRequests: captureRequests,
+		router:          router,
 	}
 
 	h.rp = &httputil.ReverseProxy{
@@ -85,7 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // director rewrites the outbound request URL and injects per-request audit
 // metadata into the request context so the transport can access it.
 func (h *Handler) director(req *http.Request) {
-	upstream := DetectUpstream(req)
+	upstream := h.router.DetectUpstream(req)
 	RewriteRequest(req, upstream)
 
 	sessionID := req.Header.Get("X-Session-ID")
@@ -100,14 +104,16 @@ func (h *Handler) director(req *http.Request) {
 	}
 
 	meta := &requestMeta{
-		sessionID:    sessionID,
-		turnID:       turnID,
-		agent:        agent,
-		upstreamName: upstream.Name,
-		project:      h.project,
-		branch:       h.branch,
-		startTime:    time.Now(),
-		batcher:      h.batcher,
+		sessionID:     sessionID,
+		turnID:        turnID,
+		agent:         agent,
+		upstreamName:  upstream.Name,
+		project:       h.project,
+		branch:        h.branch,
+		startTime:     time.Now(),
+		batcher:       h.batcher,
+		reqPath:       req.URL.Path,
+		resourceGroup: req.Header.Get("AI-Resource-Group"),
 	}
 
 	// Inject metadata into context. We replace the request in-place because
@@ -255,7 +261,8 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		)
 
 		events := extractEvents(body, isStream, meta.upstreamName,
-			meta.sessionID, meta.turnID, meta.agent, meta.project, meta.branch, ts)
+			meta.sessionID, meta.turnID, meta.agent, meta.project, meta.branch, ts,
+			meta.reqPath, meta.resourceGroup)
 		for _, e := range events {
 			meta.batcher.Add(e)
 		}
@@ -287,6 +294,7 @@ func extractEvents(
 	isStream bool,
 	upstreamName, sessionID, turnID, agent, project, branch string,
 	ts time.Time,
+	reqPath, resourceGroup string,
 ) []audit.AuditEvent {
 	base := audit.AuditEvent{
 		SessionID:       sessionID,
@@ -331,6 +339,28 @@ func extractEvents(
 		}
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
+
+		if len(result.ToolCalls) == 0 {
+			return []audit.AuditEvent{base}
+		}
+		events := make([]audit.AuditEvent, len(result.ToolCalls))
+		for i, tc := range result.ToolCalls {
+			e := base
+			e.ToolName = tc.Name
+			e.ToolInput = tc.Input
+			events[i] = e
+		}
+		return events
+
+	case "sap-ai-core":
+		result, err := parser.ParseSAPAICore(body, isStream, reqPath, resourceGroup)
+		if err != nil {
+			slog.Warn("sap-ai-core parse error", "err", err, "turn_id", turnID)
+			return []audit.AuditEvent{base}
+		}
+		base.AssistantText = result.AssistantText
+		base.Model = result.Model
+		base.ResourceGroup = result.ResourceGroup
 
 		if len(result.ToolCalls) == 0 {
 			return []audit.AuditEvent{base}

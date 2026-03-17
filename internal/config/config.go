@@ -51,6 +51,14 @@ type Config struct {
 	// Matches in request message content are replaced with [REDACTED] before
 	// storage. Set via AUDIT_SCRUB_PATTERNS.
 	ScrubPatterns string
+
+	// SAPAICoreBaseURL is the AI_API_URL from the SAP service binding.
+	// When empty, SAP AI Core routing is disabled.
+	SAPAICoreBaseURL string
+
+	// SAPAICoreAuthHost is the hostname fragment used to detect SAP AI Core
+	// traffic. Defaults to "ml.hana.ondemand.com".
+	SAPAICoreAuthHost string
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -69,8 +77,10 @@ func Load() (*Config, error) {
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		AuditProject:    getEnv("AUDIT_PROJECT", ""),
 		AuditBranch:     getEnv("AUDIT_BRANCH", ""),
-		CaptureRequests: captureRequests,
-		ScrubPatterns:   getEnv("AUDIT_SCRUB_PATTERNS", ""),
+		CaptureRequests:   captureRequests,
+		ScrubPatterns:     getEnv("AUDIT_SCRUB_PATTERNS", ""),
+		SAPAICoreBaseURL:  getEnv("SAP_AICORE_BASE_URL", ""),
+		SAPAICoreAuthHost: getEnv("SAP_AICORE_AUTH_HOST", "ml.hana.ondemand.com"),
 	}
 
 	if cfg.AuditBranch == "" {

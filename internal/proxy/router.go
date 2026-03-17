@@ -29,15 +29,34 @@ func mustParseUpstream(name, rawURL string) *Upstream {
 	return &Upstream{Name: name, URL: u}
 }
 
+// Router holds per-instance routing config (e.g. SAP AI Core upstream).
+type Router struct {
+	sapUpstream *Upstream // nil when SAP_AICORE_BASE_URL unset
+	sapAuthHost string
+}
+
+// NewRouter builds a Router. sapBaseURL may be empty (SAP disabled).
+func NewRouter(sapBaseURL, sapAuthHost string) *Router {
+	rt := &Router{sapAuthHost: sapAuthHost}
+	if sapBaseURL != "" {
+		u, err := url.Parse(sapBaseURL)
+		if err == nil {
+			rt.sapUpstream = &Upstream{Name: "sap-ai-core", URL: u}
+		}
+	}
+	return rt
+}
+
 // DetectUpstream returns the appropriate upstream for the incoming request.
 //
 // Detection priority:
-//  1. Host header — exact match against known upstream hostnames.
-//  2. Path prefix — /v1/messages → Anthropic, /v1/chat/ → OpenAI,
+//  1. SAP AI Core — when configured, checked before other host-based rules.
+//  2. Host header — exact match against known upstream hostnames.
+//  3. Path prefix — /v1/messages → Anthropic, /v1/chat/ → OpenAI,
 //     /v1beta/ → Gemini, /anthropic/ → Anthropic.
-//  3. Presence of Anthropic-specific request headers.
-//  4. Default: Anthropic (most common agent use-case is Claude Code).
-func DetectUpstream(r *http.Request) *Upstream {
+//  4. Presence of Anthropic-specific request headers.
+//  5. Default: Anthropic (most common agent use-case is Claude Code).
+func (rt *Router) DetectUpstream(r *http.Request) *Upstream {
 	host := r.Host
 	if host == "" {
 		host = r.Header.Get("Host")
@@ -46,6 +65,11 @@ func DetectUpstream(r *http.Request) *Upstream {
 	// Strip port if present.
 	if idx := strings.LastIndex(host, ":"); idx != -1 {
 		host = host[:idx]
+	}
+
+	// SAP AI Core: check before other host-based checks.
+	if rt.sapUpstream != nil && strings.Contains(host, rt.sapAuthHost) {
+		return rt.sapUpstream
 	}
 
 	switch {
@@ -88,7 +112,7 @@ func RewriteRequest(req *http.Request, upstream *Upstream) {
 
 	// Strip a path prefix used for local routing disambiguation
 	// (e.g. /anthropic/v1/messages → /v1/messages).
-	for _, prefix := range []string{"/anthropic/", "/openai/", "/gemini/"} {
+	for _, prefix := range []string{"/anthropic/", "/openai/", "/gemini/", "/sap-aicore/"} {
 		if strings.HasPrefix(req.URL.Path, prefix) {
 			req.URL.Path = "/" + strings.TrimPrefix(req.URL.Path, prefix)
 			break
