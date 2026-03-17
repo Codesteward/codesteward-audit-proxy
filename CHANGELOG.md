@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- Request body capture with configurable scrubbing pipeline (`AUDIT_CAPTURE_REQUESTS`, `AUDIT_SCRUB_PATTERNS`)
+- `PatternScrubber` — compiles Go regexp patterns at startup, replaces matches with `[REDACTED]` before storage
+- `user_messages` field: structured, queryable extraction of user-role message content from request bodies
+- `request_captured` field: boolean flag per audit row indicating whether request body was stored
+- Migration `003_request_capture.sql` adding the two new columns to existing installations
+- Dockerfile — multi-stage build (`golang:1.25-alpine` → `gcr.io/distroless/static:nonroot`), fully static binary, non-root runtime
+- `docker-compose.yml` — local development stack with ClickHouse; migrations auto-applied on first start
+- GitHub Actions CI workflow — `go vet`, `go test -race`, build verification, multi-arch Docker build check on every push and PR
+- GitHub Actions release workflow — multi-arch Docker image pushed to GHCR, static binaries for `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, auto-generated changelog, GitHub Release with SHA-256 checksums
+
+## [0.1.0] - 2026-03-17
+
+Initial release.
+
+### Added
+
+- Transparent reverse proxy supporting Anthropic, OpenAI, and Gemini upstream APIs
+- Automatic upstream routing by `Host` header, URL path prefix, and `anthropic-version` header hint
+- `io.TeeReader` stream tap — tokens forwarded to the agent immediately; audit copy consumed asynchronously
+- Anthropic SSE/streaming parser — reassembles `content_block_start` / `content_block_delta` / `content_block_stop` events including thinking blocks and tool-input JSON fragments
+- OpenAI SSE/streaming parser — accumulates tool call argument fragments by index across `data:` chunks
+- Structured audit extraction: `thinking`, `assistant_text`, `tool_name`, `tool_input`, `model` per response
+- One audit row per tool call; responses with no tool calls produce a single row
+- ClickHouse writer using the native `clickhouse-go/v2` client with batched inserts (explicit column names)
+- In-memory batcher with dual flush trigger: configurable size threshold and ticker interval
+- Multi-tenancy via `AUDIT_PROJECT` and `AUDIT_BRANCH` tags on every row; branch auto-detected from `git rev-parse` when not set explicitly
+- OpenTelemetry tracing — zero-cost when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset; `llm.proxy.request` span covers full streaming duration; W3C `traceparent` propagated inbound and outbound
+- Proxy chaining via `UPSTREAM_PROXY` (overrides `HTTPS_PROXY` / `HTTP_PROXY`); supports `http`, `https`, `socks5`
+- Agent detection from `User-Agent` header (`claude-code`, `codex`, `gemini-cli`); overridable via `X-Audit-Agent`
+- Session ID propagation via `X-Session-ID` header; auto-generated UUID when absent
+- Internal headers (`X-Session-ID`, `X-Audit-Agent`) stripped before forwarding to upstream APIs
+- `EventAdder` interface decoupling handler from concrete ClickHouse writer (enables test isolation)
+- ClickHouse migrations: `001_initial.sql` (full schema), `002_add_branch.sql`
+- Test suite: parser unit tests, batcher tests, router tests, stream tap tests, handler integration tests
+
+[Unreleased]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/bitkaio/codesteward-audit-proxy/releases/tag/v0.1.0
