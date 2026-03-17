@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-17
+
 ### Added
 
+- SAP AI Core upstream support — routes requests to a configurable SAP AI Core base URL; resource group forwarded via `AI-Resource-Group` header
+- `Router` struct encapsulating upstream detection logic; `NewRouter(sapBaseURL, sapAuthHost)` constructor replaces the previous package-level `DetectUpstream` function
 - Request body capture with configurable scrubbing pipeline (`AUDIT_CAPTURE_REQUESTS`, `AUDIT_SCRUB_PATTERNS`)
 - `PatternScrubber` — compiles Go regexp patterns at startup, replaces matches with `[REDACTED]` before storage
 - `user_messages` field: structured, queryable extraction of user-role message content from request bodies
@@ -18,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docker-compose.yml` — local development stack with ClickHouse; migrations auto-applied on first start
 - GitHub Actions CI workflow — `go vet`, `go test -race`, build verification, multi-arch Docker build check on every push and PR
 - GitHub Actions release workflow — multi-arch Docker image pushed to GHCR, static binaries for `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, auto-generated changelog, GitHub Release with SHA-256 checksums
+
+### Fixed
+
+- `handler_test.go` — updated two `NewHandler` call sites to pass the required `*Router` argument introduced by the SAP AI Core feature
+- `router_test.go` — updated all `DetectUpstream` calls to use `defaultRouter.DetectUpstream()` following the promotion of `DetectUpstream` from a package-level function to a `*Router` method
 
 ## [0.1.0] - 2026-03-17
 
@@ -44,5 +53,6 @@ Initial release.
 - ClickHouse migrations: `001_initial.sql` (full schema), `002_add_branch.sql`
 - Test suite: parser unit tests, batcher tests, router tests, stream tap tests, handler integration tests
 
-[Unreleased]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bitkaio/codesteward-audit-proxy/releases/tag/v0.1.0
