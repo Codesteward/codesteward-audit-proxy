@@ -147,14 +147,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist/
+          pattern: proxy-*
+          merge-multiple: true
 
       - name: Make Linux/macOS binaries executable
-        run: chmod +x dist/**/proxy-*
+        run: chmod +x dist/proxy-*
 
       - name: Create checksums
         working-directory: dist
-        run: |
-          find . -name 'proxy-*' -exec sha256sum {} \; | sed 's|.*/||' > sha256sums.txt
+        run: sha256sum proxy-* > sha256sums.txt
 
       - name: Generate changelog
         id: changelog
@@ -180,8 +181,8 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            dist/proxy-linux-amd64/proxy-linux-amd64
-            dist/proxy-linux-arm64/proxy-linux-arm64
-            dist/proxy-darwin-amd64/proxy-darwin-amd64
-            dist/proxy-darwin-arm64/proxy-darwin-arm64
+            dist/proxy-linux-amd64
+            dist/proxy-linux-arm64
+            dist/proxy-darwin-amd64
+            dist/proxy-darwin-arm64
             dist/sha256sums.txt
