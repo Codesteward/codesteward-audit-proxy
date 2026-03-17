@@ -15,11 +15,14 @@ func newReq(host, path string) *http.Request {
 	return r
 }
 
+// defaultRouter is a Router with SAP AI Core disabled, used across tests.
+var defaultRouter = NewRouter("", "ml.hana.ondemand.com")
+
 // --- DetectUpstream ---------------------------------------------------------
 
 func TestDetectUpstream_HostAnthropic(t *testing.T) {
 	r := newReq("api.anthropic.com", "/v1/messages")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "anthropic" {
 		t.Errorf("got %q, want %q", up.Name, "anthropic")
 	}
@@ -27,7 +30,7 @@ func TestDetectUpstream_HostAnthropic(t *testing.T) {
 
 func TestDetectUpstream_HostOpenAI(t *testing.T) {
 	r := newReq("api.openai.com", "/v1/chat/completions")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "openai" {
 		t.Errorf("got %q, want %q", up.Name, "openai")
 	}
@@ -35,7 +38,7 @@ func TestDetectUpstream_HostOpenAI(t *testing.T) {
 
 func TestDetectUpstream_HostGemini(t *testing.T) {
 	r := newReq("generativelanguage.googleapis.com", "/v1beta/models/gemini-pro:generateContent")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "gemini" {
 		t.Errorf("got %q, want %q", up.Name, "gemini")
 	}
@@ -45,7 +48,7 @@ func TestDetectUpstream_HostWithPort(t *testing.T) {
 	// When agent sets ANTHROPIC_BASE_URL=http://localhost:8080 the Host header
 	// is "localhost:8080", so routing falls through to path-based detection.
 	r := newReq("localhost:8080", "/v1/messages")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "anthropic" {
 		t.Errorf("got %q, want %q", up.Name, "anthropic")
 	}
@@ -53,7 +56,7 @@ func TestDetectUpstream_HostWithPort(t *testing.T) {
 
 func TestDetectUpstream_PathMessages(t *testing.T) {
 	r := newReq("localhost:8080", "/v1/messages")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "anthropic" {
 		t.Errorf("got %q, want %q", up.Name, "anthropic")
 	}
@@ -61,7 +64,7 @@ func TestDetectUpstream_PathMessages(t *testing.T) {
 
 func TestDetectUpstream_PathChatCompletions(t *testing.T) {
 	r := newReq("localhost:8080", "/v1/chat/completions")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "openai" {
 		t.Errorf("got %q, want %q", up.Name, "openai")
 	}
@@ -69,7 +72,7 @@ func TestDetectUpstream_PathChatCompletions(t *testing.T) {
 
 func TestDetectUpstream_PathV1Beta(t *testing.T) {
 	r := newReq("localhost:8080", "/v1beta/models/gemini-pro:generateContent")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "gemini" {
 		t.Errorf("got %q, want %q", up.Name, "gemini")
 	}
@@ -77,7 +80,7 @@ func TestDetectUpstream_PathV1Beta(t *testing.T) {
 
 func TestDetectUpstream_PathAnthropicPrefix(t *testing.T) {
 	r := newReq("localhost:8080", "/anthropic/v1/messages")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "anthropic" {
 		t.Errorf("got %q, want %q", up.Name, "anthropic")
 	}
@@ -86,7 +89,7 @@ func TestDetectUpstream_PathAnthropicPrefix(t *testing.T) {
 func TestDetectUpstream_AnthropicVersionHeader(t *testing.T) {
 	r := newReq("localhost:8080", "/unknown/path")
 	r.Header.Set("anthropic-version", "2023-06-01")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "anthropic" {
 		t.Errorf("got %q, want %q", up.Name, "anthropic")
 	}
@@ -94,7 +97,7 @@ func TestDetectUpstream_AnthropicVersionHeader(t *testing.T) {
 
 func TestDetectUpstream_DefaultIsAnthropic(t *testing.T) {
 	r := newReq("localhost:8080", "/")
-	up := DetectUpstream(r)
+	up := defaultRouter.DetectUpstream(r)
 	if up.Name != "anthropic" {
 		t.Errorf("default upstream: got %q, want %q", up.Name, "anthropic")
 	}
