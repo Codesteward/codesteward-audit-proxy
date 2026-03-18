@@ -163,6 +163,9 @@ All configuration is via environment variables. No config files required.
 | `AUDIT_BRANCH` | auto-detected | Git branch; falls back to `git rev-parse` at startup |
 | `AUDIT_CAPTURE_REQUESTS` | `true` | When `false`, request bodies are omitted from storage (session metadata is still written) |
 | `AUDIT_SCRUB_PATTERNS` | `""` | Comma-separated Go regexps; matches in request content are replaced with `[REDACTED]` |
+| `ANTHROPIC_UPSTREAM_URL` | `https://api.anthropic.com` | Override Anthropic target (e.g. LiteLLM, Portkey, regional endpoint) |
+| `OPENAI_UPSTREAM_URL` | `https://api.openai.com` | Override OpenAI target |
+| `GEMINI_UPSTREAM_URL` | `https://generativelanguage.googleapis.com` | Override Gemini target |
 | `UPSTREAM_PROXY` | *(none)* | Upstream proxy URL (overrides `HTTPS_PROXY`) |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | *(none)* | Activates OTel traces when set (e.g. `http://localhost:4318`) |

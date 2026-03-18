@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ANTHROPIC_UPSTREAM_URL`, `OPENAI_UPSTREAM_URL`, `GEMINI_UPSTREAM_URL` env vars — override the default upstream target for each provider without changing detection logic; useful for routing through LiteLLM, Portkey, a regional endpoint, or any internal gateway; defaults remain `https://api.anthropic.com`, `https://api.openai.com`, `https://generativelanguage.googleapis.com`
+- `NewRouterWithConfig(RouterConfig)` constructor on `Router` — accepts the three upstream URL overrides alongside the existing SAP AI Core config; `NewRouter` is preserved as a backwards-compatible wrapper
+
 ## [0.3.0] - 2026-03-18
 
 ### Added

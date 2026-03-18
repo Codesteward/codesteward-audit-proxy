@@ -74,7 +74,13 @@ func main() {
 	if cfg.SAPAICoreBaseURL == "" {
 		slog.Warn("SAP AI Core routing disabled: SAP_AICORE_BASE_URL is not set")
 	}
-	router := proxy.NewRouter(cfg.SAPAICoreBaseURL, cfg.SAPAICoreAuthHost)
+	router := proxy.NewRouterWithConfig(proxy.RouterConfig{
+		AnthropicUpstreamURL: cfg.AnthropicUpstreamURL,
+		OpenAIUpstreamURL:    cfg.OpenAIUpstreamURL,
+		GeminiUpstreamURL:    cfg.GeminiUpstreamURL,
+		SAPAICoreBaseURL:     cfg.SAPAICoreBaseURL,
+		SAPAICoreAuthHost:    cfg.SAPAICoreAuthHost,
+	})
 	handler := proxy.NewHandler(batcher, transport, cfg.AuditProject, cfg.AuditBranch, scrubber, cfg.CaptureRequests, router)
 
 	srv := &http.Server{

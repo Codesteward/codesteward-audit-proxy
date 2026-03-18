@@ -59,6 +59,16 @@ type Config struct {
 	// SAPAICoreAuthHost is the hostname fragment used to detect SAP AI Core
 	// traffic. Defaults to "ml.hana.ondemand.com".
 	SAPAICoreAuthHost string
+
+	// AnthropicUpstreamURL overrides the default https://api.anthropic.com
+	// target. Useful for routing through LiteLLM, Portkey, or a regional endpoint.
+	AnthropicUpstreamURL string
+
+	// OpenAIUpstreamURL overrides the default https://api.openai.com target.
+	OpenAIUpstreamURL string
+
+	// GeminiUpstreamURL overrides the default https://generativelanguage.googleapis.com target.
+	GeminiUpstreamURL string
 }
 
 // Load reads configuration from environment variables and applies defaults.
@@ -77,10 +87,13 @@ func Load() (*Config, error) {
 		LogLevel:        getEnv("LOG_LEVEL", "info"),
 		AuditProject:    getEnv("AUDIT_PROJECT", ""),
 		AuditBranch:     getEnv("AUDIT_BRANCH", ""),
-		CaptureRequests:   captureRequests,
-		ScrubPatterns:     getEnv("AUDIT_SCRUB_PATTERNS", ""),
-		SAPAICoreBaseURL:  getEnv("SAP_AICORE_BASE_URL", ""),
-		SAPAICoreAuthHost: getEnv("SAP_AICORE_AUTH_HOST", "ml.hana.ondemand.com"),
+		CaptureRequests:      captureRequests,
+		ScrubPatterns:        getEnv("AUDIT_SCRUB_PATTERNS", ""),
+		SAPAICoreBaseURL:     getEnv("SAP_AICORE_BASE_URL", ""),
+		SAPAICoreAuthHost:    getEnv("SAP_AICORE_AUTH_HOST", "ml.hana.ondemand.com"),
+		AnthropicUpstreamURL: getEnv("ANTHROPIC_UPSTREAM_URL", ""),
+		OpenAIUpstreamURL:    getEnv("OPENAI_UPSTREAM_URL", ""),
+		GeminiUpstreamURL:    getEnv("GEMINI_UPSTREAM_URL", ""),
 	}
 
 	if cfg.AuditBranch == "" {

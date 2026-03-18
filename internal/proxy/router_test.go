@@ -109,7 +109,7 @@ func TestRewriteRequest_SetsSchemeAndHost(t *testing.T) {
 	r := newReq("localhost:8080", "/v1/messages")
 	r.URL = &url.URL{Path: "/v1/messages", RawQuery: "stream=true"}
 
-	RewriteRequest(r, anthropicUpstream)
+	RewriteRequest(r, defaultRouter.anthropic)
 
 	if r.URL.Scheme != "https" {
 		t.Errorf("scheme: got %q, want %q", r.URL.Scheme, "https")
@@ -130,7 +130,7 @@ func TestRewriteRequest_StripsAnthropicPrefix(t *testing.T) {
 	r := newReq("localhost:8080", "/anthropic/v1/messages")
 	r.URL = &url.URL{Path: "/anthropic/v1/messages"}
 
-	RewriteRequest(r, anthropicUpstream)
+	RewriteRequest(r, defaultRouter.anthropic)
 
 	if r.URL.Path != "/v1/messages" {
 		t.Errorf("path: got %q, want %q", r.URL.Path, "/v1/messages")
@@ -141,7 +141,7 @@ func TestRewriteRequest_StripsOpenAIPrefix(t *testing.T) {
 	r := newReq("localhost:8080", "/openai/v1/chat/completions")
 	r.URL = &url.URL{Path: "/openai/v1/chat/completions"}
 
-	RewriteRequest(r, openaiUpstream)
+	RewriteRequest(r, defaultRouter.openai)
 
 	if r.URL.Path != "/v1/chat/completions" {
 		t.Errorf("path: got %q, want %q", r.URL.Path, "/v1/chat/completions")
@@ -152,9 +152,56 @@ func TestRewriteRequest_PreservesNonPrefixedPath(t *testing.T) {
 	r := newReq("localhost:8080", "/v1/messages")
 	r.URL = &url.URL{Path: "/v1/messages"}
 
-	RewriteRequest(r, anthropicUpstream)
+	RewriteRequest(r, defaultRouter.anthropic)
 
 	if r.URL.Path != "/v1/messages" {
 		t.Errorf("path should be unchanged: got %q", r.URL.Path)
+	}
+}
+
+// --- Upstream URL overrides --------------------------------------------------
+
+func TestNewRouterWithConfig_OverridesAnthropicURL(t *testing.T) {
+	rt := NewRouterWithConfig(RouterConfig{
+		AnthropicUpstreamURL: "https://litellm.internal/anthropic",
+		SAPAICoreAuthHost:    "ml.hana.ondemand.com",
+	})
+
+	if rt.anthropic.URL.Host != "litellm.internal" {
+		t.Errorf("host: got %q, want %q", rt.anthropic.URL.Host, "litellm.internal")
+	}
+	if rt.anthropic.URL.Path != "/anthropic" {
+		t.Errorf("path: got %q, want %q", rt.anthropic.URL.Path, "/anthropic")
+	}
+}
+
+func TestNewRouterWithConfig_DefaultsWhenOverrideEmpty(t *testing.T) {
+	rt := NewRouterWithConfig(RouterConfig{SAPAICoreAuthHost: "ml.hana.ondemand.com"})
+
+	if rt.anthropic.URL.Host != "api.anthropic.com" {
+		t.Errorf("anthropic host: got %q, want %q", rt.anthropic.URL.Host, "api.anthropic.com")
+	}
+	if rt.openai.URL.Host != "api.openai.com" {
+		t.Errorf("openai host: got %q, want %q", rt.openai.URL.Host, "api.openai.com")
+	}
+	if rt.gemini.URL.Host != "generativelanguage.googleapis.com" {
+		t.Errorf("gemini host: got %q, want %q", rt.gemini.URL.Host, "generativelanguage.googleapis.com")
+	}
+}
+
+func TestDetectUpstream_UsesOverriddenURL(t *testing.T) {
+	rt := NewRouterWithConfig(RouterConfig{
+		OpenAIUpstreamURL: "https://litellm.internal/openai",
+		SAPAICoreAuthHost: "ml.hana.ondemand.com",
+	})
+
+	r := newReq("localhost:8080", "/v1/chat/completions")
+	up := rt.DetectUpstream(r)
+
+	if up.Name != "openai" {
+		t.Errorf("name: got %q, want %q", up.Name, "openai")
+	}
+	if up.URL.Host != "litellm.internal" {
+		t.Errorf("host: got %q, want %q", up.URL.Host, "litellm.internal")
 	}
 }

@@ -15,10 +15,10 @@ type Upstream struct {
 	URL *url.URL
 }
 
-var (
-	anthropicUpstream = mustParseUpstream("anthropic", "https://api.anthropic.com")
-	openaiUpstream    = mustParseUpstream("openai", "https://api.openai.com")
-	geminiUpstream    = mustParseUpstream("gemini", "https://generativelanguage.googleapis.com")
+const (
+	defaultAnthropicURL = "https://api.anthropic.com"
+	defaultOpenAIURL    = "https://api.openai.com"
+	defaultGeminiURL    = "https://generativelanguage.googleapis.com"
 )
 
 func mustParseUpstream(name, rawURL string) *Upstream {
@@ -29,17 +29,52 @@ func mustParseUpstream(name, rawURL string) *Upstream {
 	return &Upstream{Name: name, URL: u}
 }
 
-// Router holds per-instance routing config (e.g. SAP AI Core upstream).
+func parseUpstreamOrDefault(name, override, defaultURL string) *Upstream {
+	if override != "" {
+		u, err := url.Parse(override)
+		if err == nil {
+			return &Upstream{Name: name, URL: u}
+		}
+	}
+	return mustParseUpstream(name, defaultURL)
+}
+
+// Router holds per-instance routing config (upstream URL overrides, SAP AI Core).
 type Router struct {
+	anthropic   *Upstream
+	openai      *Upstream
+	gemini      *Upstream
 	sapUpstream *Upstream // nil when SAP_AICORE_BASE_URL unset
 	sapAuthHost string
 }
 
-// NewRouter builds a Router. sapBaseURL may be empty (SAP disabled).
+// RouterConfig holds optional upstream URL overrides and SAP AI Core settings.
+type RouterConfig struct {
+	AnthropicUpstreamURL string
+	OpenAIUpstreamURL    string
+	GeminiUpstreamURL    string
+	SAPAICoreBaseURL     string
+	SAPAICoreAuthHost    string
+}
+
+// NewRouter builds a Router. Fields in cfg may be empty to use defaults.
 func NewRouter(sapBaseURL, sapAuthHost string) *Router {
-	rt := &Router{sapAuthHost: sapAuthHost}
-	if sapBaseURL != "" {
-		u, err := url.Parse(sapBaseURL)
+	return NewRouterWithConfig(RouterConfig{
+		SAPAICoreBaseURL:  sapBaseURL,
+		SAPAICoreAuthHost: sapAuthHost,
+	})
+}
+
+// NewRouterWithConfig builds a Router with full upstream URL override support.
+func NewRouterWithConfig(cfg RouterConfig) *Router {
+	rt := &Router{
+		anthropic:   parseUpstreamOrDefault("anthropic", cfg.AnthropicUpstreamURL, defaultAnthropicURL),
+		openai:      parseUpstreamOrDefault("openai", cfg.OpenAIUpstreamURL, defaultOpenAIURL),
+		gemini:      parseUpstreamOrDefault("gemini", cfg.GeminiUpstreamURL, defaultGeminiURL),
+		sapAuthHost: cfg.SAPAICoreAuthHost,
+	}
+	if cfg.SAPAICoreBaseURL != "" {
+		u, err := url.Parse(cfg.SAPAICoreBaseURL)
 		if err == nil {
 			rt.sapUpstream = &Upstream{Name: "sap-ai-core", URL: u}
 		}
@@ -74,32 +109,32 @@ func (rt *Router) DetectUpstream(r *http.Request) *Upstream {
 
 	switch {
 	case strings.EqualFold(host, "api.anthropic.com"):
-		return anthropicUpstream
+		return rt.anthropic
 	case strings.EqualFold(host, "api.openai.com"):
-		return openaiUpstream
+		return rt.openai
 	case strings.EqualFold(host, "generativelanguage.googleapis.com"):
-		return geminiUpstream
+		return rt.gemini
 	}
 
 	path := r.URL.Path
 	switch {
 	case strings.HasPrefix(path, "/v1/messages"),
 		strings.HasPrefix(path, "/anthropic/"):
-		return anthropicUpstream
+		return rt.anthropic
 	case strings.HasPrefix(path, "/v1/chat/"),
 		strings.HasPrefix(path, "/openai/"):
-		return openaiUpstream
+		return rt.openai
 	case strings.HasPrefix(path, "/v1beta/"),
 		strings.HasPrefix(path, "/gemini/"):
-		return geminiUpstream
+		return rt.gemini
 	}
 
 	// Header-based hint: Anthropic requests always include anthropic-version.
 	if r.Header.Get("anthropic-version") != "" {
-		return anthropicUpstream
+		return rt.anthropic
 	}
 
-	return anthropicUpstream
+	return rt.anthropic
 }
 
 // RewriteRequest rewrites req.URL to point at the given upstream, preserving
