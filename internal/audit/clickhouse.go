@@ -43,7 +43,7 @@ func (w *Writer) WriteBatch(ctx context.Context, events []AuditEvent) error {
 	}
 
 	batch, err := w.conn.PrepareBatch(ctx,
-		fmt.Sprintf("INSERT INTO %s.audit_events (session_id, turn_id, ts, agent, project, branch, direction, thinking, assistant_text, tool_name, tool_input, model, raw, request_captured, user_messages, resource_group)", w.db))
+		fmt.Sprintf("INSERT INTO %s.audit_events (session_id, turn_id, ts, agent, project, branch, direction, thinking, assistant_text, tool_name, tool_input, model, raw, request_captured, user_messages, resource_group, user, team)", w.db))
 	if err != nil {
 		return fmt.Errorf("clickhouse: prepare batch: %w", err)
 	}
@@ -74,6 +74,8 @@ func (w *Writer) WriteBatch(ctx context.Context, events []AuditEvent) error {
 			rc,
 			userMessages,
 			e.ResourceGroup,
+			e.User,
+			e.Team,
 		); err != nil {
 			// Abort the whole batch on any row error.
 			return fmt.Errorf("clickhouse: append row: %w", err)
@@ -82,6 +84,47 @@ func (w *Writer) WriteBatch(ctx context.Context, events []AuditEvent) error {
 
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("clickhouse: send batch: %w", err)
+	}
+
+	return nil
+}
+
+// WriteUnprocessedBatch inserts a slice of UnprocessedEvents in a single batch.
+func (w *Writer) WriteUnprocessedBatch(ctx context.Context, events []UnprocessedEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	batch, err := w.conn.PrepareBatch(ctx,
+		fmt.Sprintf("INSERT INTO %s.unprocessed_events (session_id, turn_id, ts, agent, project, branch, user, team, direction, method, path, status_code, content_type, raw, error)", w.db))
+	if err != nil {
+		return fmt.Errorf("clickhouse: prepare unprocessed batch: %w", err)
+	}
+
+	for _, e := range events {
+		if err := batch.Append(
+			e.SessionID,
+			e.TurnID,
+			e.TS,
+			e.Agent,
+			e.Project,
+			e.Branch,
+			e.User,
+			e.Team,
+			e.Direction,
+			e.Method,
+			e.Path,
+			uint16(e.StatusCode),
+			e.ContentType,
+			e.Raw,
+			e.Error,
+		); err != nil {
+			return fmt.Errorf("clickhouse: append unprocessed row: %w", err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("clickhouse: send unprocessed batch: %w", err)
 	}
 
 	return nil

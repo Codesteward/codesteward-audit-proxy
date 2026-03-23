@@ -34,8 +34,12 @@ type requestMeta struct {
 	upstreamName  string
 	project       string
 	branch        string
+	user          string
+	team          string
+	method        string
 	startTime     time.Time
 	batcher       audit.EventAdder
+	unprocessed   audit.UnprocessedAdder
 	reqPath       string
 	resourceGroup string
 }
@@ -43,6 +47,7 @@ type requestMeta struct {
 // Handler is the core reverse proxy HTTP handler.
 type Handler struct {
 	batcher         audit.EventAdder
+	unprocessed     audit.UnprocessedAdder
 	project         string
 	branch          string
 	scrubber        audit.Scrubber
@@ -56,9 +61,12 @@ type Handler struct {
 // project and branch are stored on every audit row for multi-tenancy.
 // scrubber is applied to request content before storage; captureRequests
 // controls whether request bodies are stored at all.
-func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, branch string, scrubber audit.Scrubber, captureRequests bool, router *Router) *Handler {
+// unprocessed receives events the proxy could not parse into structured audit
+// records; pass nil to silently discard them.
+func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, branch string, scrubber audit.Scrubber, captureRequests bool, router *Router, unprocessed audit.UnprocessedAdder) *Handler {
 	h := &Handler{
 		batcher:         batcher,
+		unprocessed:     unprocessed,
 		project:         project,
 		branch:          branch,
 		scrubber:        scrubber,
@@ -73,6 +81,7 @@ func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, 
 		Transport: &auditTransport{
 			inner:           transport,
 			batcher:         batcher,
+			unprocessed:     unprocessed,
 			scrubber:        scrubber,
 			captureRequests: captureRequests,
 		},
@@ -92,7 +101,12 @@ func (h *Handler) director(req *http.Request) {
 	upstream := h.router.DetectUpstream(req)
 	RewriteRequest(req, upstream)
 
-	sessionID := req.Header.Get("X-Session-ID")
+	// Session ID: X-Audit-Session-ID takes precedence, then X-Session-ID,
+	// then auto-generated UUID.
+	sessionID := req.Header.Get("X-Audit-Session-ID")
+	if sessionID == "" {
+		sessionID = req.Header.Get("X-Session-ID")
+	}
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 	}
@@ -103,15 +117,31 @@ func (h *Handler) director(req *http.Request) {
 		agent = override
 	}
 
+	// Header-based overrides take precedence over env-var defaults.
+	// This enables centrally-hosted proxies where per-request identity
+	// is injected by the IDE plugin.
+	project := h.project
+	if v := req.Header.Get("X-Audit-Project"); v != "" {
+		project = v
+	}
+	branch := h.branch
+	if v := req.Header.Get("X-Audit-Branch"); v != "" {
+		branch = v
+	}
+
 	meta := &requestMeta{
 		sessionID:     sessionID,
 		turnID:        turnID,
 		agent:         agent,
 		upstreamName:  upstream.Name,
-		project:       h.project,
-		branch:        h.branch,
+		project:       project,
+		branch:        branch,
+		user:          req.Header.Get("X-Audit-User"),
+		team:          req.Header.Get("X-Audit-Team"),
+		method:        req.Method,
 		startTime:     time.Now(),
 		batcher:       h.batcher,
+		unprocessed:   h.unprocessed,
 		reqPath:       req.URL.Path,
 		resourceGroup: req.Header.Get("AI-Resource-Group"),
 	}
@@ -136,6 +166,7 @@ func (h *Handler) errorHandler(w http.ResponseWriter, r *http.Request, err error
 type auditTransport struct {
 	inner           http.RoundTripper
 	batcher         audit.EventAdder
+	unprocessed     audit.UnprocessedAdder
 	scrubber        audit.Scrubber
 	captureRequests bool
 }
@@ -149,6 +180,11 @@ type auditTransport struct {
 var internalHeaders = []string{
 	"X-Session-ID",
 	"X-Audit-Agent",
+	"X-Audit-User",
+	"X-Audit-Project",
+	"X-Audit-Branch",
+	"X-Audit-Session-ID",
+	"X-Audit-Team",
 	"Accept-Encoding",
 }
 
@@ -219,6 +255,8 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				Agent:           meta.agent,
 				Project:         meta.project,
 				Branch:          meta.branch,
+				User:            meta.user,
+				Team:            meta.team,
 				Direction:       "request",
 				Raw:             result.Raw,
 				UserMessages:    result.UserMessages,
@@ -247,6 +285,8 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ts := time.Now()
 	status := resp.StatusCode
 
+	contentType := resp.Header.Get("Content-Type")
+
 	TapBody(resp, func(body []byte, isStream bool) {
 		// End the span here — duration covers the full streaming response,
 		// which is the meaningful latency for LLM requests.
@@ -259,17 +299,42 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			"agent", meta.agent,
 			"upstream", meta.upstreamName,
 			"method", req.Method,
-			"path", req.URL.Path,
+			"path", meta.reqPath,
 			"status", status,
 			"latency_ms", latency.Milliseconds(),
 			"stream", isStream,
 		)
 
-		events := extractEvents(body, isStream, meta.upstreamName,
-			meta.sessionID, meta.turnID, meta.agent, meta.project, meta.branch, ts,
-			meta.reqPath, meta.resourceGroup)
-		for _, e := range events {
-			meta.batcher.Add(e)
+		events, parseErr := extractEvents(body, isStream, meta.upstreamName,
+			meta.sessionID, meta.turnID, meta.agent, meta.project, meta.branch,
+			meta.user, meta.team, ts, meta.reqPath, meta.resourceGroup)
+
+		if events != nil {
+			for _, e := range events {
+				meta.batcher.Add(e)
+			}
+		} else if meta.unprocessed != nil {
+			errMsg := ""
+			if parseErr != nil {
+				errMsg = parseErr.Error()
+			}
+			meta.unprocessed.Add(audit.UnprocessedEvent{
+				SessionID:   meta.sessionID,
+				TurnID:      meta.turnID,
+				TS:          ts,
+				Agent:       meta.agent,
+				Project:     meta.project,
+				Branch:      meta.branch,
+				User:        meta.user,
+				Team:        meta.team,
+				Direction:   "response",
+				Method:      meta.method,
+				Path:        meta.reqPath,
+				StatusCode:  status,
+				ContentType: contentType,
+				Raw:         string(body),
+				Error:       errMsg,
+			})
 		}
 	})
 
@@ -282,12 +347,16 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func detectAgent(headers http.Header) string {
 	ua := strings.ToLower(headers.Get("User-Agent"))
 	switch {
-	case strings.Contains(ua, "claude-code"):
+	// Claude Code CLI sends "claude-code/..." and the VSCode extension
+	// sends "claude-cli/... (external, claude-vscode)" for API calls.
+	case strings.Contains(ua, "claude-code"), strings.Contains(ua, "claude-cli"):
 		return "claude-code"
 	case strings.Contains(ua, "openai-codex"):
 		return "codex"
 	case strings.Contains(ua, "gemini-cli"):
 		return "gemini-cli"
+	case strings.Contains(ua, "cline"):
+		return "cline"
 	default:
 		return "unknown"
 	}
@@ -295,14 +364,17 @@ func detectAgent(headers http.Header) string {
 
 // extractEvents parses the captured response body and returns one AuditEvent
 // per tool call, or a single event if there are no tool calls.
+// Returns (nil, err) when the body cannot be parsed into a structured audit
+// event — the caller should route these to the unprocessed table instead.
 // All response events have RequestCaptured=true (responses are always stored).
 func extractEvents(
 	body []byte,
 	isStream bool,
 	upstreamName, sessionID, turnID, agent, project, branch string,
+	user, team string,
 	ts time.Time,
 	reqPath, resourceGroup string,
-) []audit.AuditEvent {
+) ([]audit.AuditEvent, error) {
 	base := audit.AuditEvent{
 		SessionID:       sessionID,
 		TurnID:          turnID,
@@ -310,6 +382,8 @@ func extractEvents(
 		Agent:           agent,
 		Project:         project,
 		Branch:          branch,
+		User:            user,
+		Team:            team,
 		Direction:       "response",
 		Raw:             string(body),
 		RequestCaptured: true,
@@ -320,14 +394,18 @@ func extractEvents(
 		result, err := parser.ParseAnthropic(body, isStream)
 		if err != nil {
 			slog.Warn("anthropic parse error", "err", err, "turn_id", turnID)
-			return []audit.AuditEvent{base}
+			return nil, err
+		}
+		// Successfully parsed but no meaningful content — route to unprocessed.
+		if result.Model == "" && len(result.Thinking) == 0 && len(result.AssistantText) == 0 && len(result.ToolCalls) == 0 {
+			return nil, nil
 		}
 		base.Thinking = result.Thinking
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
 
 		if len(result.ToolCalls) == 0 {
-			return []audit.AuditEvent{base}
+			return []audit.AuditEvent{base}, nil
 		}
 		events := make([]audit.AuditEvent, len(result.ToolCalls))
 		for i, tc := range result.ToolCalls {
@@ -336,19 +414,22 @@ func extractEvents(
 			e.ToolInput = tc.Input
 			events[i] = e
 		}
-		return events
+		return events, nil
 
 	case "openai":
 		result, err := parser.ParseOpenAI(body, isStream)
 		if err != nil {
 			slog.Warn("openai parse error", "err", err, "turn_id", turnID)
-			return []audit.AuditEvent{base}
+			return nil, err
+		}
+		if result.Model == "" && len(result.AssistantText) == 0 && len(result.ToolCalls) == 0 {
+			return nil, nil
 		}
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
 
 		if len(result.ToolCalls) == 0 {
-			return []audit.AuditEvent{base}
+			return []audit.AuditEvent{base}, nil
 		}
 		events := make([]audit.AuditEvent, len(result.ToolCalls))
 		for i, tc := range result.ToolCalls {
@@ -357,20 +438,23 @@ func extractEvents(
 			e.ToolInput = tc.Input
 			events[i] = e
 		}
-		return events
+		return events, nil
 
 	case "sap-ai-core":
 		result, err := parser.ParseSAPAICore(body, isStream, reqPath, resourceGroup)
 		if err != nil {
 			slog.Warn("sap-ai-core parse error", "err", err, "turn_id", turnID)
-			return []audit.AuditEvent{base}
+			return nil, err
+		}
+		if result.Model == "" && len(result.AssistantText) == 0 && len(result.ToolCalls) == 0 {
+			return nil, nil
 		}
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
 		base.ResourceGroup = result.ResourceGroup
 
 		if len(result.ToolCalls) == 0 {
-			return []audit.AuditEvent{base}
+			return []audit.AuditEvent{base}, nil
 		}
 		events := make([]audit.AuditEvent, len(result.ToolCalls))
 		for i, tc := range result.ToolCalls {
@@ -379,10 +463,10 @@ func extractEvents(
 			e.ToolInput = tc.Input
 			events[i] = e
 		}
-		return events
+		return events, nil
 
 	default:
-		// Gemini and unknown: emit a single raw event.
-		return []audit.AuditEvent{base}
+		// Gemini and unknown: route to unprocessed since we can't parse them.
+		return nil, nil
 	}
 }
