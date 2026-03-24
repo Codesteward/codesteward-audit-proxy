@@ -22,17 +22,29 @@ The proxy is fully transparent. It never buffers the response before forwarding,
 ## Features
 
 - **Stream tap, never buffer** — uses `io.TeeReader` to forward tokens to the agent immediately while capturing a copy for audit asynchronously
-- **Anthropic + OpenAI + SAP AI Core parsing** — extracts thinking blocks, text, and tool calls from both streaming (SSE) and non-streaming responses
+- **Anthropic + OpenAI + SAP AI Core parsing** — extracts thinking blocks, text, tool calls, and token usage from both streaming (SSE) and non-streaming responses
+- **Token usage tracking** — captures `input_tokens`, `output_tokens`, `cache_read_tokens`, and `cache_write_tokens` from every LLM response; stored in ClickHouse and emitted as OTel metric counters (`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`)
 - **Request capture with scrubbing** — records user-role messages in a structured `user_messages` column; configurable regexp scrubbing replaces sensitive content with `[REDACTED]` before storage
 - **IDE plugin header support** — `X-Audit-User`, `X-Audit-Team`, `X-Audit-Project`, `X-Audit-Branch`, and `X-Audit-Session-ID` headers allow IDE companion plugins to inject per-request identity and context
 - **Unprocessed event capture** — responses that cannot be parsed into structured audit records (non-chat endpoints, unknown providers, parse errors) are routed to a separate `unprocessed_events` table so no data is lost
 - **Health endpoint** — `GET /healthz` returns JSON status and version for IDE plugin connectivity checks and load balancer probes
 - **Batched ClickHouse writes** — accumulates events in memory and flushes on size threshold (default 100) or time interval (default 1s)
 - **Multi-tenancy** — `AUDIT_PROJECT` and `AUDIT_BRANCH` tag every row; `X-Audit-*` headers override env-var defaults for centrally-hosted deployments
-- **OpenTelemetry traces** — one span per proxied request with `gen_ai.system`, session/turn IDs, latency, and status; flush spans per ClickHouse batch; W3C trace context propagated in both directions
+- **OpenTelemetry traces and metrics** — one span per proxied request with `gen_ai.system`, session/turn IDs, token usage, latency, and status; `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` metric counters with agent/model/project dimensions; flush spans per ClickHouse batch; W3C trace context propagated in both directions
 - **Proxy chaining** — supports `UPSTREAM_PROXY` for corporate firewalls, Portkey, LiteLLM, and other gateway proxies
 - **Structured JSON logging** — every request, batch flush, and error logged via `log/slog`
 - **Resilient by design** — ClickHouse or OTel unavailability is logged and discarded; the proxy never goes down because of a broken backend
+
+---
+
+## IDE Plugins
+
+Companion plugins for VSCode and JetBrains IDEs automatically configure the proxy, inject per-request identity (`X-Audit-*` headers), and show proxy connectivity status — no manual setup required.
+
+[![VS Code](https://img.shields.io/badge/VS_Code-extension-007ACC?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://github.com/bitkaio/codesteward-audit-proxy-plugins)
+[![JetBrains](https://img.shields.io/badge/JetBrains-plugin-FF6B00?style=for-the-badge&logo=jetbrains&logoColor=white)](https://github.com/bitkaio/codesteward-audit-proxy-plugins)
+
+> **Repository:** [github.com/bitkaio/codesteward-audit-proxy-plugins](https://github.com/bitkaio/codesteward-audit-proxy-plugins)
 
 ---
 
@@ -217,8 +229,15 @@ go run ./cmd/proxy
 
 | Span | Attributes |
 | --- | --- |
-| `llm.proxy.request` | `gen_ai.system`, `llm.agent`, `audit.session_id`, `audit.turn_id`, `audit.project`, `audit.branch`, `http.request.method`, `url.path`, `http.response.status_code` |
+| `llm.proxy.request` | `gen_ai.system`, `llm.agent`, `audit.session_id`, `audit.turn_id`, `audit.project`, `audit.branch`, `http.request.method`, `url.path`, `http.response.status_code`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` |
 | `audit.batch.flush` | `batch.size`, `db.system=clickhouse` |
+
+### What is metered
+
+| Metric | Type | Dimensions |
+| --- | --- | --- |
+| `gen_ai.usage.input_tokens` | Counter | `gen_ai.system`, `llm.agent`, `gen_ai.response.model`, `audit.project` |
+| `gen_ai.usage.output_tokens` | Counter | `gen_ai.system`, `llm.agent`, `gen_ai.response.model`, `audit.project` |
 
 **Span duration for `llm.proxy.request` covers the full streaming response** — from when the request is sent upstream to when the last token is delivered to the agent. This is the meaningful latency for LLM workloads.
 
@@ -233,7 +252,7 @@ The proxy extracts W3C `traceparent`/`tracestate` headers from incoming agent re
 `GET /healthz` returns a JSON response with the proxy status and build version:
 
 ```json
-{"status": "ok", "version": "0.4.0"}
+{"status": "ok", "version": "1.0.0"}
 ```
 
 Useful for IDE plugin connectivity checks, load balancer probes, and deployment verification. The version is set at build time via `-ldflags "-X main.version=..."`.
@@ -242,7 +261,7 @@ Useful for IDE plugin connectivity checks, load balancer probes, and deployment 
 
 ## IDE plugin headers
 
-When the proxy is hosted centrally (shared by a team), individual developers cannot set env vars on the proxy process. Instead, IDE companion plugins (VSCode, JetBrains) inject per-request identity via `X-Audit-*` headers.
+When the proxy is hosted centrally (shared by a team), individual developers cannot set env vars on the proxy process. Instead, the [IDE companion plugins](https://github.com/bitkaio/codesteward-audit-proxy-plugins) (VSCode, JetBrains) inject per-request identity via `X-Audit-*` headers.
 
 | Header | Description | Override behaviour |
 | --- | --- | --- |
@@ -337,7 +356,11 @@ CREATE TABLE audit.audit_events
     request_captured  UInt8,               -- 0 when AUDIT_CAPTURE_REQUESTS=false
     user_messages     Array(String),       -- extracted user-role text, scrubbed
     user              LowCardinality(String),  -- developer identity from X-Audit-User
-    team              LowCardinality(String)   -- team/org from X-Audit-Team
+    team              LowCardinality(String),  -- team/org from X-Audit-Team
+    input_tokens      UInt32,                  -- input/prompt tokens from LLM response
+    output_tokens     UInt32,                  -- output/completion tokens from LLM response
+    cache_read_tokens  UInt32,                 -- Anthropic cache read tokens
+    cache_write_tokens UInt32                  -- Anthropic cache creation tokens
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(ts)
@@ -382,6 +405,7 @@ clickhouse-client --multiquery < migrations/003_request_capture.sql
 clickhouse-client --multiquery < migrations/004_sapaicore.sql
 clickhouse-client --multiquery < migrations/005_add_user_team.sql
 clickhouse-client --multiquery < migrations/006_unprocessed_events.sql
+clickhouse-client --multiquery < migrations/007_add_token_usage.sql
 ```
 
 ---
@@ -392,7 +416,7 @@ clickhouse-client --multiquery < migrations/006_unprocessed_events.sql
 ├── cmd/proxy/main.go                 Entry point, /healthz, wiring, graceful shutdown
 ├── internal/
 │   ├── config/config.go              Env-var config loading, git branch detection
-│   ├── telemetry/otel.go             OTel TracerProvider setup (no-op when unconfigured)
+│   ├── telemetry/otel.go             OTel TracerProvider + MeterProvider setup (no-op when unconfigured)
 │   ├── audit/
 │   │   ├── event.go                  AuditEvent, UnprocessedEvent, EventAdder, UnprocessedAdder
 │   │   ├── batcher.go                In-memory batchers (size + interval flush)
@@ -404,14 +428,15 @@ clickhouse-client --multiquery < migrations/006_unprocessed_events.sql
 │   │   ├── stream.go                 TeeReader stream tap
 │   │   └── transport.go              http.Transport with proxy chaining
 │   └── parser/
-│       ├── types.go                  Shared ToolCall type
+│       ├── types.go                  Shared ToolCall, TokenUsage types
 │       ├── anthropic.go              Anthropic message + SSE stream parser
 │       ├── openai.go                 OpenAI chat completion + SSE stream parser
 │       ├── sapaicore.go              SAP AI Core response parser
 │       ├── request.go                Provider-agnostic request parser (user message extraction)
 │       └── gemini.go                 Gemini stub (TODO)
 ├── docs/
-│   └── ide-plugins-design.md         VSCode + JetBrains companion plugin design
+│   ├── ide-plugins-design.md         VSCode + JetBrains companion plugin design
+│   └── dashboard/                    Dashboard UI design spec and implementation guide
 └── migrations/
     ├── 001_initial.sql               Full schema for new installations
     ├── 002_add_branch.sql            Add branch column
@@ -419,6 +444,7 @@ clickhouse-client --multiquery < migrations/006_unprocessed_events.sql
     ├── 004_sapaicore.sql             Add resource_group column
     ├── 005_add_user_team.sql         Add user + team columns
     ├── 006_unprocessed_events.sql    Create unprocessed_events table
+    ├── 007_add_token_usage.sql       Add token usage columns
     └── migrate.sh                    Idempotent HTTP migration runner
 ```
 

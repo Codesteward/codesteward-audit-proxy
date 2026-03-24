@@ -427,6 +427,48 @@ func TestHandler_EmptyResponseGoesToUnprocessed(t *testing.T) {
 	}
 }
 
+func TestHandler_TokenUsageExtracted(t *testing.T) {
+	upstreamBody, _ := json.Marshal(map[string]any{
+		"model":   "claude-opus-4-6",
+		"content": []any{map[string]any{"type": "text", "text": "Hi!"}},
+		"usage": map[string]any{
+			"input_tokens":               1523,
+			"output_tokens":              384,
+			"cache_creation_input_tokens": 100,
+			"cache_read_input_tokens":     1200,
+		},
+	})
+
+	handler, eventCh := newStack(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(upstreamBody)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader("{}"))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	all := collectEvents(eventCh)
+	events := filterByDirection(all, "response")
+	if len(events) == 0 {
+		t.Fatal("no response events")
+	}
+
+	e := events[0]
+	if e.InputTokens != 1523 {
+		t.Errorf("input_tokens: got %d, want 1523", e.InputTokens)
+	}
+	if e.OutputTokens != 384 {
+		t.Errorf("output_tokens: got %d, want 384", e.OutputTokens)
+	}
+	if e.CacheReadTokens != 1200 {
+		t.Errorf("cache_read_tokens: got %d, want 1200", e.CacheReadTokens)
+	}
+	if e.CacheWriteTokens != 100 {
+		t.Errorf("cache_write_tokens: got %d, want 100", e.CacheWriteTokens)
+	}
+}
+
 func TestHandler_BadGatewayOnUnreachableUpstream(t *testing.T) {
 	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	dead.Close() // immediately close so the port is unreachable

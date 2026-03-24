@@ -109,6 +109,53 @@ func TestParseOpenAIFull_MultipleToolCalls(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIFull_Usage(t *testing.T) {
+	body := mustJSON(map[string]any{
+		"model": "gpt-4o",
+		"choices": []any{
+			map[string]any{
+				"message": map[string]any{"content": "Hi"},
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     1523,
+			"completion_tokens": 384,
+			"total_tokens":      1907,
+		},
+	})
+
+	result, err := ParseOpenAI(body, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Usage.InputTokens != 1523 {
+		t.Errorf("input_tokens: got %d, want 1523", result.Usage.InputTokens)
+	}
+	if result.Usage.OutputTokens != 384 {
+		t.Errorf("output_tokens: got %d, want 384", result.Usage.OutputTokens)
+	}
+}
+
+func TestParseOpenAIStream_Usage(t *testing.T) {
+	stream := buildOpenAISSE([]string{
+		`{"model":"gpt-4o","choices":[{"delta":{"content":"Hi"}}]}`,
+		`{"choices":[],"usage":{"prompt_tokens":500,"completion_tokens":42}}`,
+	})
+
+	result, err := ParseOpenAI([]byte(stream), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Usage.InputTokens != 500 {
+		t.Errorf("input_tokens: got %d, want 500", result.Usage.InputTokens)
+	}
+	if result.Usage.OutputTokens != 42 {
+		t.Errorf("output_tokens: got %d, want 42", result.Usage.OutputTokens)
+	}
+}
+
 func TestParseOpenAIFull_EmptyChoices(t *testing.T) {
 	body := mustJSON(map[string]any{
 		"model":   "gpt-4o",

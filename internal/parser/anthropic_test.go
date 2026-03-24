@@ -121,6 +121,66 @@ func TestParseAnthropicFull_MultipleToolCalls(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicFull_Usage(t *testing.T) {
+	body := mustJSON(map[string]any{
+		"model":   "claude-opus-4-6",
+		"content": []any{map[string]any{"type": "text", "text": "Hi"}},
+		"usage": map[string]any{
+			"input_tokens":                1523,
+			"output_tokens":               384,
+			"cache_creation_input_tokens":  100,
+			"cache_read_input_tokens":      1200,
+		},
+	})
+
+	result, err := ParseAnthropic(body, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Usage.InputTokens != 1523 {
+		t.Errorf("input_tokens: got %d, want 1523", result.Usage.InputTokens)
+	}
+	if result.Usage.OutputTokens != 384 {
+		t.Errorf("output_tokens: got %d, want 384", result.Usage.OutputTokens)
+	}
+	if result.Usage.CacheWriteTokens != 100 {
+		t.Errorf("cache_write_tokens: got %d, want 100", result.Usage.CacheWriteTokens)
+	}
+	if result.Usage.CacheReadTokens != 1200 {
+		t.Errorf("cache_read_tokens: got %d, want 1200", result.Usage.CacheReadTokens)
+	}
+}
+
+func TestParseAnthropicStream_Usage(t *testing.T) {
+	stream := buildAnthropicSSE([]sseEvent{
+		{typ: "message_start", data: `{"type":"message_start","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1523,"cache_read_input_tokens":1200,"cache_creation_input_tokens":50}}}`},
+		{typ: "content_block_start", data: `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		{typ: "content_block_delta", data: `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`},
+		{typ: "content_block_stop", data: `{"type":"content_block_stop","index":0}`},
+		{typ: "message_delta", data: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":384}}`},
+		{typ: "message_stop", data: `{"type":"message_stop"}`},
+	})
+
+	result, err := ParseAnthropic([]byte(stream), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Usage.InputTokens != 1523 {
+		t.Errorf("input_tokens: got %d, want 1523", result.Usage.InputTokens)
+	}
+	if result.Usage.OutputTokens != 384 {
+		t.Errorf("output_tokens: got %d, want 384", result.Usage.OutputTokens)
+	}
+	if result.Usage.CacheReadTokens != 1200 {
+		t.Errorf("cache_read_tokens: got %d, want 1200", result.Usage.CacheReadTokens)
+	}
+	if result.Usage.CacheWriteTokens != 50 {
+		t.Errorf("cache_write_tokens: got %d, want 50", result.Usage.CacheWriteTokens)
+	}
+}
+
 func TestParseAnthropicFull_EmptyContent(t *testing.T) {
 	body := mustJSON(map[string]any{
 		"model":   "claude-opus-4-6",

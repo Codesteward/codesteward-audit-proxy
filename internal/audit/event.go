@@ -73,4 +73,10 @@ type AuditEvent struct {
 	// UserMessages holds extracted user-role message content, scrubbed.
 	// Populated only on direction="request" records.
 	UserMessages []string
+
+	// Token usage from the LLM response. Zero on request-direction records.
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
 }

@@ -6,8 +6,10 @@ import (
 	"os"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -66,7 +68,27 @@ func Setup(ctx context.Context) (shutdown func(context.Context) error, err error
 	)
 	otel.SetTracerProvider(tp)
 
-	return tp.Shutdown, nil
+	// Metric exporter — same OTLP endpoint as traces.
+	metricExp, err := otlpmetrichttp.New(ctx)
+	if err != nil {
+		// Non-fatal: traces still work without metrics.
+		return tp.Shutdown, nil
+	}
+
+	mp := metric.NewMeterProvider(
+		metric.WithReader(metric.NewPeriodicReader(metricExp)),
+		metric.WithResource(res),
+	)
+	otel.SetMeterProvider(mp)
+
+	return func(ctx context.Context) error {
+		tErr := tp.Shutdown(ctx)
+		mErr := mp.Shutdown(ctx)
+		if tErr != nil {
+			return tErr
+		}
+		return mErr
+	}, nil
 }
 
 func serviceName() string {

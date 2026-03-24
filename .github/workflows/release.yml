@@ -157,20 +157,36 @@ jobs:
         working-directory: dist
         run: sha256sum proxy-* > sha256sums.txt
 
-      - name: Generate changelog
+      - name: Extract release notes from CHANGELOG.md
         id: changelog
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="${PREV_TAG}..HEAD"
-          else
-            RANGE="HEAD"
+          VERSION=${GITHUB_REF_NAME#v}
+          # Extract the section for this version from CHANGELOG.md
+          # Matches from "## [X.Y.Z]" to the next "## [" or end of file
+          awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > changelog.md
+
+          # Fall back to git log if CHANGELOG.md has no entry for this version
+          if [ ! -s changelog.md ]; then
+            echo "⚠️  No CHANGELOG.md entry for ${VERSION}, falling back to git log"
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              RANGE="${PREV_TAG}..HEAD"
+            else
+              RANGE="HEAD"
+            fi
+            {
+              echo "### Changes"
+              echo ""
+              git log ${RANGE} --pretty=format:"- %s (%h)" --no-merges
+            } > changelog.md
           fi
-          {
-            echo "## What's changed"
-            echo ""
-            git log ${RANGE} --pretty=format:"- %s (%h)" --no-merges
-          } > changelog.md
           cat changelog.md
 
       - name: Create GitHub Release

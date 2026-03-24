@@ -13,6 +13,7 @@ type OpenAIResult struct {
 	AssistantText []string
 	ToolCalls     []ToolCall
 	Model         string
+	Usage         TokenUsage
 }
 
 // ParseOpenAI dispatches to the streaming or non-streaming parser.
@@ -33,6 +34,12 @@ type openAIResponse struct {
 			ToolCalls []openAIToolCallObj `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage *openAIUsage `json:"usage,omitempty"`
+}
+
+type openAIUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
 }
 
 type openAIToolCallObj struct {
@@ -49,6 +56,12 @@ func parseOpenAIFull(body []byte) (OpenAIResult, error) {
 	}
 
 	result := OpenAIResult{Model: resp.Model}
+	if resp.Usage != nil {
+		result.Usage = TokenUsage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		}
+	}
 
 	for _, choice := range resp.Choices {
 		if choice.Message.Content != "" {
@@ -85,6 +98,7 @@ type openAIChunk struct {
 			} `json:"tool_calls"`
 		} `json:"delta"`
 	} `json:"choices"`
+	Usage *openAIUsage `json:"usage,omitempty"`
 }
 
 func parseOpenAIStream(body []byte) (OpenAIResult, error) {
@@ -117,6 +131,12 @@ func parseOpenAIStream(body []byte) (OpenAIResult, error) {
 
 		if chunk.Model != "" && result.Model == "" {
 			result.Model = chunk.Model
+		}
+		if chunk.Usage != nil {
+			result.Usage = TokenUsage{
+				InputTokens:  chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+			}
 		}
 
 		for _, choice := range chunk.Choices {

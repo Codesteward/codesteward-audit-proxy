@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-24
+
+### Added
+
+- **Token usage extraction** — `input_tokens`, `output_tokens`, `cache_read_tokens`, and `cache_write_tokens` captured from every LLM response and stored in ClickHouse; supports Anthropic (including cache tokens), OpenAI, and SAP AI Core in both streaming and non-streaming modes
+- **OTel metric counters** — `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` emitted as Int64Counter metrics with `gen_ai.system`, `llm.agent`, `gen_ai.response.model`, and `audit.project` dimensions; no-op when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset
+- **OTel MeterProvider** — OTLP/HTTP metric exporter set up alongside existing TracerProvider; both shut down cleanly on graceful stop
+- `TokenUsage` shared type in `parser/types.go` — used by all parser result types
+- Token usage span attributes — `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` added to `llm.proxy.request` spans
+- Migration `007_add_token_usage.sql` — adds `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` columns to existing installations
+- Dashboard design documentation (`docs/dashboard/`) — comprehensive design spec and implementation guide for a Nuxt 4 + Vue 3 web UI covering session browsing, event inspection, token usage analytics, and proxy health monitoring
+- Parser tests for token usage extraction (Anthropic full + streaming, OpenAI full + streaming)
+- Handler test for end-to-end token usage flow
+
+### Changed
+
+- Release pipeline now extracts release notes from `CHANGELOG.md` instead of auto-generating from git log; falls back to git log if no entry exists for the tagged version
+
 ## [0.4.0] - 2026-03-23
 
 ### Added
@@ -91,7 +109,8 @@ Initial release.
 - ClickHouse migrations: `001_initial.sql` (full schema), `002_add_branch.sql`
 - Test suite: parser unit tests, batcher tests, router tests, stream tap tests, handler integration tests
 
-[Unreleased]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.4.0...v1.0.0
 [0.4.0]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bitkaio/codesteward-audit-proxy/compare/v0.1.0...v0.2.0

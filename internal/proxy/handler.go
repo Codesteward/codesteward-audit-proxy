@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -74,6 +75,14 @@ func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, 
 		router:          router,
 	}
 
+	meter := otel.Meter(telemetry.InstrumentationName)
+	inputTokens, _ := meter.Int64Counter("gen_ai.usage.input_tokens",
+		otelmetric.WithDescription("Total input/prompt tokens consumed"),
+		otelmetric.WithUnit("{token}"))
+	outputTokens, _ := meter.Int64Counter("gen_ai.usage.output_tokens",
+		otelmetric.WithDescription("Total output/completion tokens consumed"),
+		otelmetric.WithUnit("{token}"))
+
 	h.rp = &httputil.ReverseProxy{
 		Director: h.director,
 		// Wrap the base transport so we can tap the response body inside
@@ -84,6 +93,8 @@ func NewHandler(batcher audit.EventAdder, transport http.RoundTripper, project, 
 			unprocessed:     unprocessed,
 			scrubber:        scrubber,
 			captureRequests: captureRequests,
+			inputTokens:     inputTokens,
+			outputTokens:    outputTokens,
 		},
 		ErrorHandler: h.errorHandler,
 	}
@@ -169,6 +180,8 @@ type auditTransport struct {
 	unprocessed     audit.UnprocessedAdder
 	scrubber        audit.Scrubber
 	captureRequests bool
+	inputTokens     otelmetric.Int64Counter
+	outputTokens    otelmetric.Int64Counter
 }
 
 // internalHeaders are headers that must not be forwarded to upstream APIs.
@@ -288,6 +301,39 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	contentType := resp.Header.Get("Content-Type")
 
 	TapBody(resp, func(body []byte, isStream bool) {
+		events, parseErr := extractEvents(body, isStream, meta.upstreamName,
+			meta.sessionID, meta.turnID, meta.agent, meta.project, meta.branch,
+			meta.user, meta.team, ts, meta.reqPath, meta.resourceGroup)
+
+		// Set token usage as span attributes and record metrics.
+		if len(events) > 0 {
+			e := events[0]
+			span.SetAttributes(
+				attribute.Int("gen_ai.usage.input_tokens", e.InputTokens),
+				attribute.Int("gen_ai.usage.output_tokens", e.OutputTokens),
+			)
+			if e.CacheReadTokens > 0 {
+				span.SetAttributes(attribute.Int("gen_ai.usage.cache_read_tokens", e.CacheReadTokens))
+			}
+			if e.CacheWriteTokens > 0 {
+				span.SetAttributes(attribute.Int("gen_ai.usage.cache_write_tokens", e.CacheWriteTokens))
+			}
+
+			// Record metric counters with agent/model/project dimensions.
+			metricAttrs := otelmetric.WithAttributes(
+				attribute.String("gen_ai.system", meta.upstreamName),
+				attribute.String("llm.agent", meta.agent),
+				attribute.String("gen_ai.response.model", e.Model),
+				attribute.String("audit.project", meta.project),
+			)
+			if e.InputTokens > 0 {
+				t.inputTokens.Add(ctx, int64(e.InputTokens), metricAttrs)
+			}
+			if e.OutputTokens > 0 {
+				t.outputTokens.Add(ctx, int64(e.OutputTokens), metricAttrs)
+			}
+		}
+
 		// End the span here — duration covers the full streaming response,
 		// which is the meaningful latency for LLM requests.
 		span.End()
@@ -303,11 +349,9 @@ func (t *auditTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			"status", status,
 			"latency_ms", latency.Milliseconds(),
 			"stream", isStream,
+			"input_tokens", tokenCount(events, func(e audit.AuditEvent) int { return e.InputTokens }),
+			"output_tokens", tokenCount(events, func(e audit.AuditEvent) int { return e.OutputTokens }),
 		)
-
-		events, parseErr := extractEvents(body, isStream, meta.upstreamName,
-			meta.sessionID, meta.turnID, meta.agent, meta.project, meta.branch,
-			meta.user, meta.team, ts, meta.reqPath, meta.resourceGroup)
 
 		if events != nil {
 			for _, e := range events {
@@ -389,6 +433,27 @@ func extractEvents(
 		RequestCaptured: true,
 	}
 
+	applyUsage := func(usage parser.TokenUsage) {
+		base.InputTokens = usage.InputTokens
+		base.OutputTokens = usage.OutputTokens
+		base.CacheReadTokens = usage.CacheReadTokens
+		base.CacheWriteTokens = usage.CacheWriteTokens
+	}
+
+	buildToolEvents := func(toolCalls []parser.ToolCall) []audit.AuditEvent {
+		if len(toolCalls) == 0 {
+			return []audit.AuditEvent{base}
+		}
+		events := make([]audit.AuditEvent, len(toolCalls))
+		for i, tc := range toolCalls {
+			e := base
+			e.ToolName = tc.Name
+			e.ToolInput = tc.Input
+			events[i] = e
+		}
+		return events
+	}
+
 	switch upstreamName {
 	case "anthropic":
 		result, err := parser.ParseAnthropic(body, isStream)
@@ -403,18 +468,8 @@ func extractEvents(
 		base.Thinking = result.Thinking
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
-
-		if len(result.ToolCalls) == 0 {
-			return []audit.AuditEvent{base}, nil
-		}
-		events := make([]audit.AuditEvent, len(result.ToolCalls))
-		for i, tc := range result.ToolCalls {
-			e := base
-			e.ToolName = tc.Name
-			e.ToolInput = tc.Input
-			events[i] = e
-		}
-		return events, nil
+		applyUsage(result.Usage)
+		return buildToolEvents(result.ToolCalls), nil
 
 	case "openai":
 		result, err := parser.ParseOpenAI(body, isStream)
@@ -427,18 +482,8 @@ func extractEvents(
 		}
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
-
-		if len(result.ToolCalls) == 0 {
-			return []audit.AuditEvent{base}, nil
-		}
-		events := make([]audit.AuditEvent, len(result.ToolCalls))
-		for i, tc := range result.ToolCalls {
-			e := base
-			e.ToolName = tc.Name
-			e.ToolInput = tc.Input
-			events[i] = e
-		}
-		return events, nil
+		applyUsage(result.Usage)
+		return buildToolEvents(result.ToolCalls), nil
 
 	case "sap-ai-core":
 		result, err := parser.ParseSAPAICore(body, isStream, reqPath, resourceGroup)
@@ -452,21 +497,20 @@ func extractEvents(
 		base.AssistantText = result.AssistantText
 		base.Model = result.Model
 		base.ResourceGroup = result.ResourceGroup
-
-		if len(result.ToolCalls) == 0 {
-			return []audit.AuditEvent{base}, nil
-		}
-		events := make([]audit.AuditEvent, len(result.ToolCalls))
-		for i, tc := range result.ToolCalls {
-			e := base
-			e.ToolName = tc.Name
-			e.ToolInput = tc.Input
-			events[i] = e
-		}
-		return events, nil
+		applyUsage(result.Usage)
+		return buildToolEvents(result.ToolCalls), nil
 
 	default:
 		// Gemini and unknown: route to unprocessed since we can't parse them.
 		return nil, nil
 	}
+}
+
+// tokenCount returns a token field from the first event, or 0 if empty.
+// All events in a turn share the same usage values.
+func tokenCount(events []audit.AuditEvent, field func(audit.AuditEvent) int) int {
+	if len(events) > 0 {
+		return field(events[0])
+	}
+	return 0
 }

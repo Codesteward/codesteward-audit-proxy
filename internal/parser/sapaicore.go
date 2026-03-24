@@ -15,6 +15,7 @@ type SAPAICoreResult struct {
 	ToolCalls     []ToolCall
 	Model         string // deployment ID
 	ResourceGroup string
+	Usage         TokenUsage
 }
 
 // ParseSAPAICore parses an SAP AI Core Harmonized API response.
@@ -43,6 +44,7 @@ func ParseSAPAICore(body []byte, isStream bool, reqPath, resourceGroup string) (
 	}
 	result.AssistantText = oaiResult.AssistantText
 	result.ToolCalls = oaiResult.ToolCalls
+	result.Usage = oaiResult.Usage
 	// Model from OpenAI response is the SAP model alias; prefer deployment ID
 	// from path (already set above); only fall back if path had no match.
 	if result.Model == "" {

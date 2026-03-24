@@ -14,6 +14,7 @@ type AnthropicResult struct {
 	AssistantText []string
 	ToolCalls     []ToolCall
 	Model         string
+	Usage         TokenUsage
 }
 
 // ParseAnthropic dispatches to the streaming or non-streaming parser based on
@@ -30,6 +31,14 @@ func ParseAnthropic(body []byte, isStream bool) (AnthropicResult, error) {
 type anthropicMessage struct {
 	Model   string             `json:"model"`
 	Content []anthropicContent `json:"content"`
+	Usage   anthropicUsage     `json:"usage"`
+}
+
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 type anthropicContent struct {
@@ -46,7 +55,15 @@ func parseAnthropicFull(body []byte) (AnthropicResult, error) {
 		return AnthropicResult{}, fmt.Errorf("anthropic full parse: %w", err)
 	}
 
-	result := AnthropicResult{Model: msg.Model}
+	result := AnthropicResult{
+		Model: msg.Model,
+		Usage: TokenUsage{
+			InputTokens:      msg.Usage.InputTokens,
+			OutputTokens:     msg.Usage.OutputTokens,
+			CacheReadTokens:  msg.Usage.CacheReadInputTokens,
+			CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
+		},
+	}
 
 	for _, block := range msg.Content {
 		switch block.Type {
@@ -95,7 +112,8 @@ type anthropicSSEEvent struct {
 
 	// message_start
 	Message *struct {
-		Model string `json:"model"`
+		Model string         `json:"model"`
+		Usage anthropicUsage `json:"usage"`
 	} `json:"message,omitempty"`
 
 	// content_block_start
@@ -105,13 +123,16 @@ type anthropicSSEEvent struct {
 		Name string `json:"name"`
 	} `json:"content_block,omitempty"`
 
-	// content_block_delta
+	// content_block_delta / message_delta
 	Delta *struct {
 		Type        string `json:"type"`
 		Thinking    string `json:"thinking"`
 		Text        string `json:"text"`
 		PartialJSON string `json:"partial_json"`
 	} `json:"delta,omitempty"`
+
+	// message_delta carries final output token count
+	Usage *anthropicUsage `json:"usage,omitempty"`
 }
 
 func parseAnthropicStream(body []byte) (AnthropicResult, error) {
@@ -139,6 +160,15 @@ func parseAnthropicStream(body []byte) (AnthropicResult, error) {
 		case evMessageStart:
 			if ev.Message != nil {
 				result.Model = ev.Message.Model
+				result.Usage.InputTokens = ev.Message.Usage.InputTokens
+				result.Usage.CacheReadTokens = ev.Message.Usage.CacheReadInputTokens
+				result.Usage.CacheWriteTokens = ev.Message.Usage.CacheCreationInputTokens
+			}
+
+		case "message_delta":
+			// Final message_delta carries the output token count.
+			if ev.Usage != nil {
+				result.Usage.OutputTokens = ev.Usage.OutputTokens
 			}
 
 		case evContentBlockStart:
